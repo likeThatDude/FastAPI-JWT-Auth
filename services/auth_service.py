@@ -1,4 +1,5 @@
 import datetime
+
 import jwt
 from jwt import PyJWTError
 import bcrypt
@@ -6,20 +7,27 @@ from pydantic import ValidationError
 
 from models.auth_schema import UserSchema, TokenSchema, UserCreateSchema
 from fastapi.exceptions import HTTPException
-from fastapi import status, Depends
-from fastapi.security import OAuth2PasswordBearer
+from fastapi import status, Depends, Request, Response
+from fastapi.responses import JSONResponse
 from database import User, get_session
 from sqlalchemy.orm import Session
 
-jwt_secret: str = 'cs7tk4hawIC6frkDa9a80DV_-lIYqK_K4RlDXPaGT2w'
-jwt_algorithm: str = 'HS256'
-jwt_expiration: int = 3600
-
-oauth2_schema = OAuth2PasswordBearer(tokenUrl='/auth/login')
+from config import AuthJWTKeys
 
 
-def get_current_user(token: str = Depends(oauth2_schema)) -> UserSchema:
-    return AuthService.validate_token(token)
+# oauth2_schema = OAuth2PasswordBearer(tokenUrl='/auth/login')
+
+
+def get_current_user(user_request: Request) -> UserSchema:
+    access_token_cookie = user_request.cookies.get("access_token")
+    user = AuthService.validate_token(access_token_cookie)
+    return user
+
+
+def logout_user():
+    response = JSONResponse(content={"message": "Successfully logged out"})
+    response.delete_cookie("access_token")
+    return response
 
 
 class AuthService:
@@ -49,7 +57,7 @@ class AuthService:
         try:
             # Достаём из токена информацию в поле payload в которой можем положить id password
             # или любую инфу о пользователе
-            payload = jwt.decode(token, jwt_secret, algorithms=jwt_algorithm)
+            payload = jwt.decode(token, AuthJWTKeys.jwy_public_key, algorithms=[AuthJWTKeys.jwt_algorithm])
         except PyJWTError:
             raise exception from None
 
@@ -75,19 +83,22 @@ class AuthService:
 
         return user
 
+    # Функция для создания токена
     @classmethod
     def create_token(cls, user: User) -> TokenSchema:
+        # Преобразовываем объект User в pydentic схему
         user_data = UserSchema.from_orm(user)
-
+        # Полуаем текущее время для настройки payload
         time_now = datetime.datetime.utcnow()
         payload = {
             'iat': time_now,
             'nbf': time_now,
-            'exp': time_now + datetime.timedelta(seconds=jwt_expiration),
+            'exp': time_now + datetime.timedelta(seconds=AuthJWTKeys.jwt_expiration),
             'sub': str(user_data.id),
             'user': user_data.dict()
         }
-        token = jwt.encode(payload, jwt_secret, algorithm=jwt_algorithm)
+        # Кодируем токен с нашим ключём безопасности
+        token = jwt.encode(payload, AuthJWTKeys.jwt_private_key, algorithm=AuthJWTKeys.jwt_algorithm)
         return TokenSchema(access_token=token)
 
     def __init__(self, session: Session = Depends(get_session)):
@@ -104,7 +115,7 @@ class AuthService:
 
         return self.create_token(user)
 
-    def authenticate_user(self, username: str, password: str) -> TokenSchema:
+    def authenticate_user(self, username: str, password: str) -> JSONResponse:
         exception = HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail='Incorrect username or password',
@@ -119,5 +130,9 @@ class AuthService:
 
         if not self.verify_password(password, user.hashed_password):
             raise exception
-
-        return self.create_token(user)
+        # Создаём токен
+        token = self.create_token(user)
+        # создаём куки и передаём в куки
+        response = JSONResponse(content={"token": token.access_token})
+        response.set_cookie(key="access_token", value=token.access_token)
+        return response

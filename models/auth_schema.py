@@ -11,11 +11,19 @@ class UserCreateSchema(BaseUserSchema):
 
 
 class UserSchema(BaseUserSchema):
-
     id: int
 
     class Config:
         from_attributes = True
+
+
+class UserLoginSchema(BaseModel):
+    username: str
+    password: str
+
+
+class CookieResponse(BaseModel):
+    token: str
 
 
 class TokenSchema(BaseModel):
